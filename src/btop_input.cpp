@@ -384,6 +384,12 @@ namespace Input {
 				else if (key == "c")
 					Config::flip("proc_per_core");
 
+				else if (key == "v" and Proc::gpu_stats_enabled()) {
+					Config::flip("proc_gpu_only");
+					Config::set("update_following", true);
+					if (Config::getB("proc_tree")) no_update = false;
+				}
+
 				else if (key == "%")
 					Config::flip("proc_mem_bytes");
 

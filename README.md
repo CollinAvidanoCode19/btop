@@ -483,6 +483,42 @@ See [GPU compatibility](#gpu-compatibility) section for more about compiling wit
    git clone https://github.com/rocm/rocm_smi_lib.git --depth 1 -b rocm-5.6.x lib/rocm_smi_lib
    ```
 
+   ### GPU usage per process
+
+   With GPU support enabled the process box on Linux shows how much each process uses the GPUs:
+
+   * `GMem` and `Gpu%` columns in the process list, with `gpu` and `gpu memory` as sorting options.
+     The columns are hidden when the process box is narrower than 62 characters.
+   * The `v` key (`gpu-active` in the title of the process box) limits the list to processes that use a GPU.
+     In tree view the children of such a process are kept as well.
+   * The detailed view of a process (`Enter`) adds the device, the kind of context (graphic/compute) and the
+     video encoder and decoder utilization.
+
+   Where the numbers come from:
+
+ * **NVIDIA**
+
+    The process lists and utilization samples of the `nvidia-ml` library, the same source `nvidia-smi` uses.
+    Processes of all users are visible. The device is named after its GPU box (`gpu0`, `gpu1`, ...).
+
+ * **Intel, AMD and others**
+
+    The DRM client usage stats the kernel exposes in `/proc/<pid>/fdinfo`. This works without any library for
+    every driver that implements them (i915, xe, amdgpu, ...) and needs Linux 5.19 or later, some drivers only
+    report memory on newer kernels. The device is named after its driver. Only processes whose file descriptors
+    btop is allowed to inspect are covered, i.e. your own unless btop runs as root.
+
+    The file descriptors of a process are looked through when it starts and then every 10 updates, so a process
+    that has been running for a while can take that long to show up after it first opens a GPU.
+
+   Memory and utilization of a process that uses several devices are added up, which means that on a system
+   with an integrated and a discrete GPU the `GMem` of a process can differ from what `nvidia-smi` reports.
+
+   The option `proc_gpu_stats` turns all of this off, which saves a few milliseconds per update.
+
+   For NVIDIA devices the GPU box also shows the fan speed, if the device has a fan of its own, and the current
+   PCIe link generation and width.
+
 <details>
 <summary>
 
@@ -1385,7 +1421,7 @@ shown_boxes = "cpu mem net proc"
 #* Update time in milliseconds, recommended 2000 ms or above for better sample times for graphs.
 update_ms = 2000
 
-#* Processes sorting, "pid" "program" "arguments" "threads" "user" "memory" "cpu lazy" "cpu direct",
+#* Processes sorting, "pid" "program" "arguments" "threads" "user" "memory" "cpu lazy" "cpu direct" "gpu" "gpu memory",
 #* "cpu lazy" sorts top process over time (easier to follow), "cpu direct" updates top process directly.
 proc_sorting = "cpu lazy"
 
@@ -1409,6 +1445,12 @@ proc_mem_bytes = true
 
 #* Show cpu graph for each process.
 proc_cpu_graphs = true
+
+#* (Linux) Collect GPU usage and GPU memory per process and show them in the process list.
+proc_gpu_stats = true
+
+#* (Linux) Only list processes that use a GPU, requires proc_gpu_stats.
+proc_gpu_only = false
 
 #* Use /proc/[pid]/smaps for memory information in the process info box (very slow but more accurate)
 proc_info_smaps = false

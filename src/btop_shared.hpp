@@ -126,12 +126,6 @@ namespace Gpu {
 
 	extern const array<string, 2> mem_names;
 
-	//* Container for process information // TODO
-	/*struct proc_info {
-    unsigned int pid;
-    unsigned long long mem;
-	};*/
-
 	//* Container for supported Gpu::*::collect() functions
 	struct gpu_info_supported {
 		bool gpu_utilization = true,
@@ -145,7 +139,9 @@ namespace Gpu {
 				 mem_used = true,
 				 pcie_txrx = true,
 				 encoder_utilization = true,
-				 decoder_utilization = true;
+				 decoder_utilization = true,
+				 fan_speed = false,
+				 pcie_link = false;
 	};
 
 	//* Per-device container for GPU info
@@ -175,10 +171,12 @@ namespace Gpu {
 		long long encoder_utilization = 0;
 		long long decoder_utilization = 0;
 
-		gpu_info_supported supported_functions;
+		long long fan_speed_percent = 0; // Intended fan speed, can exceed 100 on some devices
 
-		// vector<proc_info> graphics_processes = {}; // TODO
-		// vector<proc_info> compute_processes = {};
+		long long pcie_link_gen = 0; // Current PCIe link generation, drops when the device idles
+		long long pcie_link_width = 0; // Current PCIe link width in lanes
+
+		gpu_info_supported supported_functions;
 	};
 
 	namespace Nvml {
@@ -378,6 +376,35 @@ namespace Proc {
 	//? Translation from process state char to explanative string
 	extern const std::unordered_map<char, string> proc_states;
 
+	//? True when the platform collector is able to report per-process GPU usage
+	extern bool gpu_stats_available;
+
+	//* True if per-process GPU usage is both available and turned on in the config
+	[[nodiscard]] bool gpu_stats_enabled();
+
+	//* True if the process list is currently limited to processes that use a GPU
+	[[nodiscard]] bool gpu_only_enabled();
+
+	//? Kinds of GPU context a process can hold, combined as bit flags in gpu_proc_info::type
+	inline constexpr uint8_t gpu_context_graphic = 1;
+	inline constexpr uint8_t gpu_context_compute = 2;
+
+	//* Container for the GPU usage of one process
+	struct gpu_proc_info {
+		double usage_p{};       // GPU utilization in percent, summed over the devices in use
+		double enc_p{};         // Video encoder utilization in percent
+		double dec_p{};         // Video decoder utilization in percent
+		uint64_t mem{};         // GPU memory in bytes
+		uint8_t type{};         // gpu_context_* flags, 0 if the source can't tell
+		string dev{};           // Devices in use joined with '+', empty if the process doesn't use a GPU
+
+		//* True if the process holds resources on at least one GPU
+		[[nodiscard]] bool present() const { return not dev.empty(); }
+
+		//* Add the usage of <other> to this one, used when child processes are folded into a parent
+		void add(const gpu_proc_info& other);
+	};
+
 	//* Container for process information
 	struct proc_info {
 		size_t pid{};
@@ -401,6 +428,7 @@ namespace Proc {
 		size_t tree_index{};
 		bool collapsed{};
 		bool filtered{};
+		gpu_proc_info gpu{};
 	};
 
 	//* Container for process info box

@@ -20,6 +20,7 @@ tab-size = 4
 #include <charconv>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -27,6 +28,7 @@ tab-size = 4
 #include <numeric>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -55,6 +57,7 @@ tab-size = 4
 #include "../btop_log.hpp"
 #include "../btop_shared.hpp"
 #include "../btop_tools.hpp"
+#include "drm_fdinfo.hpp"
 
 #if defined(GPU_SUPPORT)
 	// Redefining C++ keywords fortunately has a warning in clang, however it's unavoidable here
@@ -175,11 +178,14 @@ namespace Cpu {
 
 namespace Gpu {
 	vector<gpu_info> gpus;
+	//? True if a device of this system reports per-process usage through DRM fdinfo
+	bool drm_proc_usage = false;
 	//? NVIDIA data collection
 	namespace Nvml {
 		//? NVML defines, structs & typedefs
 		#define NVML_DEVICE_NAME_BUFFER_SIZE        64
 		#define NVML_SUCCESS                         0
+		#define NVML_ERROR_INSUFFICIENT_SIZE         7
 		#define NVML_TEMPERATURE_THRESHOLD_SHUTDOWN  0
 		#define NVML_CLOCK_GRAPHICS                  0
 		#define NVML_CLOCK_MEM                       2
@@ -197,6 +203,7 @@ namespace Gpu {
 
 		struct nvmlUtilization_t {unsigned int gpu, memory;};
 		struct nvmlMemory_t {unsigned long long total, free, used;};
+		struct nvmlProcessUtilizationSample_t {unsigned int pid; unsigned long long timeStamp; unsigned int smUtil, memUtil, encUtil, decUtil;};
 
 		//? Function pointers
 		const char* (*nvmlErrorString)(nvmlReturn_t);
@@ -217,12 +224,45 @@ namespace Gpu {
 		nvmlReturn_t (*nvmlDeviceGetEncoderUtilization)(nvmlDevice_t, unsigned int*, unsigned int*);
 		nvmlReturn_t (*nvmlDeviceGetDecoderUtilization)(nvmlDevice_t, unsigned int*, unsigned int*);
 
+		//? Optional function pointers, nullptr if the installed driver doesn't have the function
+		nvmlReturn_t (*nvmlDeviceGetFanSpeed)(nvmlDevice_t, unsigned int*) = nullptr;
+		nvmlReturn_t (*nvmlDeviceGetCurrPcieLinkGeneration)(nvmlDevice_t, unsigned int*) = nullptr;
+		nvmlReturn_t (*nvmlDeviceGetCurrPcieLinkWidth)(nvmlDevice_t, unsigned int*) = nullptr;
+		nvmlReturn_t (*nvmlDeviceGetProcessUtilization)(nvmlDevice_t, nvmlProcessUtilizationSample_t*, unsigned int*, unsigned long long) = nullptr;
+
+		//? One of the calls that list the processes with a context on a device. The entries are
+		//? read from a raw buffer because their size depends on the version of the call.
+		struct running_procs_api {
+			nvmlReturn_t (*call)(nvmlDevice_t, unsigned int*, void*) = nullptr;
+			size_t entry_size = 0;        //? Documented size of one entry in bytes
+			bool probe_wide_entry = false; //? See read_running_procs()
+			unsigned int capacity = 32;   //? Entries to make room for, grows when the driver asks for more
+		};
+		running_procs_api compute_procs_api;
+		running_procs_api graphics_procs_api;
+
+		//? Last utilization sample of a process together with the local time it was received at
+		struct proc_util_sample {
+			unsigned int sm_percent = 0, enc_percent = 0, dec_percent = 0;
+			uint64_t received_us = 0;
+		};
+
+		//? Per-device state of the process utilization query
+		struct proc_util_state {
+			unsigned long long last_seen_timestamp = 0;
+			unsigned int capacity = 64; //? Samples to make room for, grows when the driver asks for more
+			std::unordered_map<unsigned int, proc_util_sample> samples;
+		};
+		vector<proc_util_state> proc_util_states;
+
 		//? Data
 		void* nvml_dl_handle;
 		bool initialized = false;
 		bool init();
 		bool shutdown();
 		template <bool is_init> bool collect(gpu_info* gpus_slice);
+		bool has_proc_usage();
+		void collect_proc_usage(DrmFdinfo::usage_map& usage);
 		vector<nvmlDevice_t> devices;
 		unsigned int device_count = 0;
 	}
@@ -417,10 +457,15 @@ namespace Shared {
 			for (size_t i = 0; i < gpu_b_height_offsets.size(); ++i)
 				gpu_b_height_offsets[i] = gpus[i].supported_functions.gpu_utilization
 					   + gpus[i].supported_functions.pwr_usage
+					   + gpus[i].supported_functions.fan_speed
 					   + (gpus[i].supported_functions.encoder_utilization or gpus[i].supported_functions.decoder_utilization)
 					   + (gpus[i].supported_functions.mem_total or gpus[i].supported_functions.mem_used)
 						* (1 + 2*(gpus[i].supported_functions.mem_total and gpus[i].supported_functions.mem_used) + 2*gpus[i].supported_functions.mem_utilization);
 		}
+
+		//? Per-process GPU usage comes from NVML for NVIDIA devices and from DRM fdinfo for the rest
+		Gpu::drm_proc_usage = DrmFdinfo::available();
+		Proc::gpu_stats_available = Gpu::Nvml::has_proc_usage() or Gpu::drm_proc_usage;
 	#endif
 
 		//? Init for namespace Mem
@@ -1303,6 +1348,36 @@ namespace Gpu {
 
             #undef LOAD_SYM
 
+			//? Functions that only add information and may be missing from older drivers
+			auto find_nvml_sym = [&](const char sym_name[]) {
+				auto sym = dlsym(nvml_dl_handle, sym_name);
+				if (sym == nullptr) dlerror(); //? Clear the pending error so it isn't blamed on a later lookup
+				return sym;
+			};
+
+			#define FIND_SYM(NAME)  NAME = (decltype(NAME))find_nvml_sym(#NAME)
+
+			FIND_SYM(nvmlDeviceGetFanSpeed);
+			FIND_SYM(nvmlDeviceGetCurrPcieLinkGeneration);
+			FIND_SYM(nvmlDeviceGetCurrPcieLinkWidth);
+			FIND_SYM(nvmlDeviceGetProcessUtilization);
+
+			#undef FIND_SYM
+
+			//? Newest first: _v3 and _v2 return {pid, usedGpuMemory, gpuInstanceId, computeInstanceId}
+			//? and the unversioned call {pid, usedGpuMemory}
+			auto find_running_procs_api = [&](const string& base_name) {
+				for (const auto& [suffix, entry_size, probe_wide_entry] : {
+					tuple{"_v3", size_t{24}, true}, tuple{"_v2", size_t{24}, false}, tuple{"", size_t{16}, false}
+				}) {
+					if (auto sym = find_nvml_sym((base_name + suffix).c_str()); sym != nullptr)
+						return running_procs_api{(decltype(running_procs_api::call))sym, entry_size, probe_wide_entry};
+				}
+				return running_procs_api{};
+			};
+			compute_procs_api = find_running_procs_api("nvmlDeviceGetComputeRunningProcesses");
+			graphics_procs_api = find_running_procs_api("nvmlDeviceGetGraphicsRunningProcesses");
+
 			//? Function calls
 			nvmlReturn_t result = nvmlInit();
     		if (result != NVML_SUCCESS) {
@@ -1319,6 +1394,7 @@ namespace Gpu {
 
 			if (device_count > 0) {
 				devices.resize(device_count);
+				proc_util_states.assign(device_count, {});
 				gpus.resize(device_count);
 				gpu_names.resize(device_count);
 
@@ -1530,16 +1606,36 @@ namespace Gpu {
 					} else gpus_slice[i].decoder_utilization = (long long)utilization;
 				}
 
-    			//? TODO: Processes using GPU
-    				/*unsigned int proc_info_len;
-    				nvmlProcessInfo_t* proc_info = 0;
-    				result = nvmlDeviceGetComputeRunningProcesses_v3(device, &proc_info_len, proc_info);
-    				if (result != NVML_SUCCESS) {
-						Logger::warning("NVML: Failed to get compute processes: {}", nvmlErrorString(result));
-    				} else {
-    					for (unsigned int i = 0; i < proc_info_len; ++i)
-    						gpus_slice[i].graphics_processes.push_back({proc_info[i].pid, proc_info[i].usedGpuMemory});
-    				}*/
+				//? Fan speed, not supported by devices without a fan of their own such as laptop GPUs
+				if constexpr(is_init) gpus_slice[i].supported_functions.fan_speed = nvmlDeviceGetFanSpeed != nullptr;
+				if (gpus_slice[i].supported_functions.fan_speed) {
+					unsigned int fan_speed_percent = 0;
+					result = nvmlDeviceGetFanSpeed(devices[i], &fan_speed_percent);
+					if (result != NVML_SUCCESS) {
+						if constexpr(is_init) {
+							Logger::debug("NVML: No fan speed for GPU {}: {}", i, nvmlErrorString(result));
+							gpus_slice[i].supported_functions.fan_speed = false;
+						}
+					} else gpus_slice[i].fan_speed_percent = (long long)fan_speed_percent;
+				}
+
+				//? PCIe link generation and width, the generation changes with the power state of the device
+				if constexpr(is_init) gpus_slice[i].supported_functions.pcie_link = nvmlDeviceGetCurrPcieLinkGeneration != nullptr and nvmlDeviceGetCurrPcieLinkWidth != nullptr;
+				if (gpus_slice[i].supported_functions.pcie_link) {
+					unsigned int link_gen = 0;
+					unsigned int link_width = 0;
+					result = nvmlDeviceGetCurrPcieLinkGeneration(devices[i], &link_gen);
+					if (result == NVML_SUCCESS) result = nvmlDeviceGetCurrPcieLinkWidth(devices[i], &link_width);
+					if (result != NVML_SUCCESS) {
+						if constexpr(is_init) {
+							Logger::debug("NVML: No PCIe link info for GPU {}: {}", i, nvmlErrorString(result));
+							gpus_slice[i].supported_functions.pcie_link = false;
+						}
+					} else {
+						gpus_slice[i].pcie_link_gen = (long long)link_gen;
+						gpus_slice[i].pcie_link_width = (long long)link_width;
+					}
+				}
 
 				// nvTimer.stop_rename_reset("Nv pcie thread join");
 				//? Join PCIE TX/RX threads
@@ -1553,6 +1649,114 @@ namespace Gpu {
     		}
 
 			return true;
+		}
+
+		//* Add the processes of one running-process list of <device> to <procs>, keyed by pid.
+		//* <api> is one of compute_procs_api / graphics_procs_api, <type> the matching Proc::gpu_context_* flag.
+		//* A process that is in both lists reports all of its memory in each, so the larger value is kept.
+		static void read_running_procs(running_procs_api& api, nvmlDevice_t device, uint8_t type, std::unordered_map<unsigned int, Proc::gpu_proc_info>& procs) {
+			if (api.call == nullptr) return;
+
+			//? Some 5xx drivers returned a 32 byte entry with an extra field from the _v3 call while
+			//? the header documents 24. The buffer has room for either size and is filled with a
+			//? marker, entries of the documented size leave the tail of the buffer untouched.
+			constexpr size_t wide_entry_size = 32;
+			constexpr unsigned char marker = 0xa5;
+			vector<unsigned char> buffer;
+			unsigned int count = 0;
+			nvmlReturn_t result = NVML_ERROR_INSUFFICIENT_SIZE;
+
+			//? Each call takes around half a millisecond, so the size isn't queried up front. If
+			//? the list outgrew the buffer the driver reports the size it needs and the call is repeated.
+			for (int attempt = 0; attempt < 2 and result == NVML_ERROR_INSUFFICIENT_SIZE; ++attempt) {
+				buffer.assign(api.capacity * wide_entry_size, marker);
+				count = api.capacity;
+				result = api.call(device, &count, buffer.data());
+				if (result == NVML_ERROR_INSUFFICIENT_SIZE) api.capacity = max(api.capacity, count) + 16;
+			}
+			if (result != NVML_SUCCESS) return;
+			count = min(count, (unsigned int)(buffer.size() / wide_entry_size));
+
+			size_t entry_size = api.entry_size;
+			if (api.probe_wide_entry) {
+				const auto tail = std::span{buffer}.subspan(count * api.entry_size, count * (wide_entry_size - api.entry_size));
+				if (rng::any_of(tail, [](unsigned char byte) { return byte != marker; })) entry_size = wide_entry_size;
+			}
+
+			for (unsigned int n = 0; n < count; ++n) {
+				//? Both layouts start with {unsigned int pid; unsigned long long usedGpuMemory;}
+				unsigned int pid = 0;
+				unsigned long long used_bytes = 0;
+				std::memcpy(&pid, buffer.data() + n * entry_size, sizeof(pid));
+				std::memcpy(&used_bytes, buffer.data() + n * entry_size + 8, sizeof(used_bytes));
+				if (used_bytes == std::numeric_limits<unsigned long long>::max()) used_bytes = 0; //? NVML_VALUE_NOT_AVAILABLE
+
+				auto& proc = procs[pid];
+				proc.type |= type;
+				proc.mem = max(proc.mem, (uint64_t)used_bytes);
+			}
+		}
+
+		//* Add the utilization of the processes on device <index> to <procs>, keyed by pid.
+		//* <index> must be below device_count. Processes without activity are left untouched.
+		static void read_proc_utilization(unsigned int index, std::unordered_map<unsigned int, Proc::gpu_proc_info>& procs) {
+			if (nvmlDeviceGetProcessUtilization == nullptr) return;
+			auto& state = proc_util_states.at(index);
+			const uint64_t now_us = uptime_micros(); //? Monotonic, the hold time below must survive clock changes
+
+			//? As for the process lists the size isn't queried up front. Anything but success or a
+			//? request for a larger buffer means that no process was active since the last query.
+			vector<nvmlProcessUtilizationSample_t> samples;
+			unsigned int count = 0;
+			nvmlReturn_t result = NVML_ERROR_INSUFFICIENT_SIZE;
+			for (int attempt = 0; attempt < 2 and result == NVML_ERROR_INSUFFICIENT_SIZE; ++attempt) {
+				samples.assign(state.capacity, {});
+				count = state.capacity;
+				result = nvmlDeviceGetProcessUtilization(devices[index], samples.data(), &count, state.last_seen_timestamp);
+				if (result == NVML_ERROR_INSUFFICIENT_SIZE) state.capacity = max(state.capacity, count) + 16;
+			}
+			if (result == NVML_SUCCESS) {
+				for (const auto& sample : samples | std::views::take(min(count, state.capacity))) {
+					state.samples[sample.pid] = {sample.smUtil, sample.encUtil, sample.decUtil, now_us};
+					state.last_seen_timestamp = max(state.last_seen_timestamp, sample.timeStamp);
+				}
+			}
+
+			//? The driver takes a sample about five times a second and returns nothing in between,
+			//? so a sample stays valid for a short while or fast update rates would flicker to zero
+			constexpr uint64_t sample_hold_us = 700'000;
+			std::erase_if(state.samples, [&](const auto& entry) { return now_us - entry.second.received_us > sample_hold_us; });
+
+			for (const auto& [pid, sample] : state.samples) {
+				auto& proc = procs[pid];
+				proc.usage_p = min(sample.sm_percent, 100u);
+				proc.enc_p = min(sample.enc_percent, 100u);
+				proc.dec_p = min(sample.dec_percent, 100u);
+			}
+		}
+
+		//* True if NVML is loaded and able to list the processes that use a device
+		bool has_proc_usage() {
+			return initialized and (compute_procs_api.call != nullptr or graphics_procs_api.call != nullptr);
+		}
+
+		//* Add the GPU usage of every process on an NVIDIA device to <usage>, keyed by pid.
+		//* The device label is the name of the matching GPU box, NVML devices are the first ones in Gpu::gpus.
+		void collect_proc_usage(DrmFdinfo::usage_map& usage) {
+			if (not has_proc_usage()) return;
+
+			for (unsigned int i = 0; i < device_count; ++i) {
+				std::unordered_map<unsigned int, Proc::gpu_proc_info> procs;
+				read_running_procs(compute_procs_api, devices[i], Proc::gpu_context_compute, procs);
+				read_running_procs(graphics_procs_api, devices[i], Proc::gpu_context_graphic, procs);
+				read_proc_utilization(i, procs);
+
+				const string label = "gpu" + to_string(i);
+				for (auto& [pid, proc] : procs) {
+					proc.dev = label;
+					usage[pid].add(proc);
+				}
+			}
 		}
     }
 
@@ -3102,6 +3306,7 @@ namespace Proc {
 	string current_sort;
 	string current_filter;
 	bool current_rev{};
+	bool current_gpu_only{};
 	bool is_tree_mode;
 
 	fs::file_time_type passwd_time;
@@ -3116,6 +3321,38 @@ namespace Proc {
 	constexpr size_t KTHREADD = 2;
 	static std::unordered_set<size_t> kernels_procs = {KTHREADD};
 	static std::unordered_set<size_t> dead_procs;
+
+#ifdef GPU_SUPPORT
+	static DrmFdinfo::Scanner drm_scanner;
+	static bool gpu_usage_collected{};
+
+	//* Refresh the GPU usage of every process in <procs>.
+	//* <pids> are the processes that are alive in this cycle. Dead processes, which only remain
+	//* in <procs> while the list is paused, keep the values they had when they were last seen.
+	static void _collect_gpu_usage(const vector<size_t>& pids, vector<proc_info>& procs) {
+		if (not gpu_stats_enabled()) {
+			//? Clear what is left from before the option got turned off
+			if (gpu_usage_collected) {
+				for (auto& proc : procs) proc.gpu = {};
+				gpu_usage_collected = false;
+			}
+			return;
+		}
+
+		DrmFdinfo::usage_map usage;
+		Gpu::Nvml::collect_proc_usage(usage);
+		if (Gpu::drm_proc_usage) drm_scanner.collect(pids, Shared::procPath, uptime_micros() * 1000, usage);
+
+		for (auto& proc : procs) {
+			if (proc.state == 'X') continue;
+			if (auto found_usage = usage.find(proc.pid); found_usage != usage.end())
+				proc.gpu = std::move(found_usage->second);
+			else
+				proc.gpu = {};
+		}
+		gpu_usage_collected = true;
+	}
+#endif
 
 	//* Get detailed info for selected process
 	static void _collect_details(const size_t pid, const uint64_t uptime, vector<proc_info>& procs) {
@@ -3227,8 +3464,14 @@ namespace Proc {
 		auto show_detailed = Config::getB("show_detailed");
 		const auto pause_proc_list = Config::getB("pause_proc_list");
 		const size_t detailed_pid = Config::getI("detailed_pid");
-		bool should_filter = current_filter != filter;
-		if (should_filter) current_filter = filter;
+		//? The GPU-only toggle is applied by matches_filter() and acts like a filter that is always set
+		const bool gpu_only = gpu_only_enabled();
+		const bool filter_active = gpu_only or not filter.empty();
+		bool should_filter = current_filter != filter or current_gpu_only != gpu_only;
+		if (should_filter) {
+			current_filter = filter;
+			current_gpu_only = gpu_only;
+		}
 		bool sorted_change = (sorting != current_sort or reverse != current_rev or should_filter);
 		bool tree_mode_change = tree != is_tree_mode;
 		if (sorted_change) {
@@ -3506,10 +3749,16 @@ namespace Proc {
 						if (!keep_dead_proc_usage) {
 							r.cpu_p = 0.0;
 							r.mem = 0;
+							r.gpu = {};
 						}
 					}
 				}
 			}
+
+		#ifdef GPU_SUPPORT
+			//? Per-process GPU usage, has to be in place before the details box copies its process
+			_collect_gpu_usage(found, current_procs);
+		#endif
 
 			//? Update the details info box for process if active
 			if (show_detailed and got_detailed) {
@@ -3528,7 +3777,7 @@ namespace Proc {
 		if (should_filter) {
 			filter_found = 0;
 			for (auto& p : current_procs) {
-				if (not tree and not filter.empty()) {
+				if (not tree and filter_active) {
 					if (!matches_filter(p, filter)) {
 						p.filtered = true;
 						filter_found++;
@@ -3589,7 +3838,7 @@ namespace Proc {
 				if (Config::ints.at("proc_selected") > 0) locate_selection = true;
 			}
 
-			if (should_filter or not filter.empty()) filter_found = 0;
+			if (should_filter or filter_active) filter_found = 0;
 
 			vector<tree_proc> tree_procs;
 			tree_procs.reserve(current_procs.size());
@@ -3608,7 +3857,7 @@ namespace Proc {
 
 			//? Start recursive iteration over processes with the lowest shared parent pids
 			for (auto& p : rng::equal_range(current_procs, current_procs.at(0).ppid, rng::less{}, &proc_info::ppid)) {
-				_tree_gen(p, current_procs, tree_procs, 0, false, filter, false, no_update, should_filter);
+				_tree_gen(p, current_procs, tree_procs, 0, false, filter, false, no_update, should_filter or filter_active);
 			}
 
 			//? Recursive sort over tree structure to account for collapsed processes in the tree

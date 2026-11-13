@@ -1045,6 +1045,7 @@ namespace Gpu {
 	vector<Draw::Meter> gpu_meter_vec = {};
 	vector<Draw::Meter> pwr_meter_vec = {};
 	vector<Draw::Meter> enc_meter_vec = {};
+	vector<Draw::Meter> fan_meter_vec = {};
 	vector<string> box = {};
 
     string draw(const gpu_info& gpu, unsigned long index, bool force_redraw, bool data_same) {
@@ -1063,6 +1064,7 @@ namespace Gpu {
 		auto& gpu_meter = gpu_meter_vec[index];
 		auto& pwr_meter = pwr_meter_vec[index];
 		auto& enc_meter = enc_meter_vec[index];
+		auto& fan_meter = fan_meter_vec[index];
 
 		if (force_redraw) redraw[index] = true;
         bool show_temps = gpu.supported_functions.temp_info and (Config::getB("check_temp"));
@@ -1105,6 +1107,8 @@ namespace Gpu {
 				mem_used_graph = Draw::Graph{b_width/2 - 2, 2 + 2*(gpu.supported_functions.mem_utilization), "used", safeVal(gpu.gpu_percent, "gpu-vram-totals"s), graph_symbol};
 			if (gpu.supported_functions.encoder_utilization)
 				enc_meter = Draw::Meter{b_width/2 - 10, "cpu"};
+			if (gpu.supported_functions.fan_speed)
+				fan_meter = Draw::Meter{b_width - 12, "cpu"};
 		}
 
 
@@ -1144,6 +1148,21 @@ namespace Gpu {
 			if (gpu.supported_functions.pwr_state and gpu.pwr_state != 32) // NVML_PSTATE_UNKNOWN; unsupported or non-nvidia card
 				out += std::string(" P-state: ") + (gpu.pwr_state > 9 ? "" : " ") + 'P' + Theme::g("cached").at(clamp(gpu.pwr_state, 0ll, 100ll)) + to_string(gpu.pwr_state);
 			rows_used++;
+		}
+
+		//? Fan speed meter, the reported speed is relative to the device's noise limit and can exceed 100%
+		if (gpu.supported_functions.fan_speed) {
+			out += Mv::to(b_y + rows_used, b_x + 1) + Theme::c("main_fg") + Fx::b + "FAN " + fan_meter(clamp(gpu.fan_speed_percent, 0ll, 100ll))
+				+ Theme::g("cpu").at(clamp(gpu.fan_speed_percent, 0ll, 100ll)) + rjust(to_string(gpu.fan_speed_percent), 5) + Theme::c("main_fg") + '%';
+			rows_used++;
+		}
+
+		//? PCIe link generation and width in the top border of the box, redrawn every cycle as the
+		//? link drops to a lower generation while the device is idle
+		if (gpu.supported_functions.pcie_link and width >= min_width + 14) {
+			const string link_string = fmt::format("pcie gen{} x{}", gpu.pcie_link_gen, gpu.pcie_link_width);
+			out += Mv::to(y, x + 9) + Fx::ub + Theme::c("cpu_box") + Symbols::title_left + Fx::b + Theme::c("title") + link_string
+				+ Fx::ub + Theme::c("cpu_box") + Symbols::title_right + Symbols::h_line * max(0, 14 - (int)link_string.size());
 		}
 
 		//? Encode and Decode meters
@@ -1617,12 +1636,18 @@ namespace Proc {
 	Draw::TextEdit filter;
 	Draw::Graph detailed_cpu_graph;
 	Draw::Graph detailed_mem_graph;
-	int user_size, thread_size, prog_size, cmd_size, tree_size;
+	int user_size, thread_size, prog_size, cmd_size, tree_size, gpu_size = 0;
 	int dgraph_x, dgraph_width, d_width, d_x, d_y;
 	bool previous_proc_banner_state = false;
 	atomic<bool> resized (false);
 
 	string box;
+
+	//* Format a GPU utilization for a field of at most 5 characters: one decimal below 100, none above.
+	//* <percent> is expected to be >= 0, it can exceed 100 for a process that uses several devices.
+	static string format_gpu_percent(const double percent) {
+		return fmt::format("{:.{}f}", percent, percent < 99.95 ? 1 : 0);
+	}
 
 	int selection(const std::string_view cmd_key) {
 		auto start = Config::getI("proc_start");
@@ -1716,6 +1741,11 @@ namespace Proc {
 		auto mem_bytes = Config::getB("proc_mem_bytes");
 		auto vim_keys = Config::getB("vim_keys");
 		auto show_graphs = Config::getB("proc_cpu_graphs");
+		//? The GPU memory and GPU usage columns need 12 characters, they are dropped before the list gets too cramped
+		const bool gpu_stats = Proc::gpu_stats_enabled();
+		const bool show_gpu = gpu_stats and width >= (show_graphs ? 62 : 57);
+		//? The field sizes are only recalculated on a redraw, which has to follow if the columns come or go
+		if (show_gpu != (gpu_size > 0)) force_redraw = true;
 		const auto pause_proc_list = Config::getB("pause_proc_list");
 		auto follow_process = Config::getB("follow_process");
 		int followed_pid = Config::getI("followed_pid");
@@ -1800,15 +1830,16 @@ namespace Proc {
 			const string title_right = Theme::c("proc_box") + Symbols::title_right;
 			const string title_left_down = Theme::c("proc_box") + Symbols::title_left_down;
 			const string title_right_down = Theme::c("proc_box") + Symbols::title_right_down;
-			for (const auto& key : {"t", "K", "k", "s", "N", "F", "enter", "info_enter"})
+			for (const auto& key : {"t", "K", "k", "s", "N", "F", "v", "enter", "info_enter"})
 				if (Input::mouse_mappings.contains(key)) Input::mouse_mappings.erase(key);
 
 			//? Adapt sizes of text fields
 			user_size = (width < 75 ? 5 : 10);
 			thread_size = (width < 75 ? - 1 : 4);
-			prog_size = (width > 70 ? 16 : ( width > 55 ? 8 : width - user_size - thread_size - 33));
-			cmd_size = (width > 55 ? width - prog_size - user_size - thread_size - 33 : -1);
-			tree_size = width - user_size - thread_size - 23;
+			gpu_size = (show_gpu ? 12 : 0);
+			prog_size = (width > 70 ? 16 : ( width > 55 ? 8 : width - user_size - thread_size - 33 - gpu_size));
+			cmd_size = (width > 55 ? width - prog_size - user_size - thread_size - 33 - gpu_size : -1);
+			tree_size = width - user_size - thread_size - 23 - gpu_size;
 			if (not show_graphs) {
 				cmd_size += 5;
 				tree_size += 5;
@@ -1898,7 +1929,11 @@ namespace Proc {
 
 			//? Filter
 			auto filtering = Config::getB("proc_filtering"); // ? filter(20) : Config::getS("proc_filter"))
-			const auto filter_text = (filtering) ? filter(max(6, width - 66)) : uresize(Config::getS("proc_filter"), max(6, width - 66));
+			//? The GPU-only button sits between the filter and the pause button and takes 12 characters from the filter
+			const int sort_size = Config::getS("proc_sorting").size();
+			const bool gpu_only_button = gpu_stats and width > 72 + sort_size;
+			const int filter_size = max(6, width - 66 - (gpu_only_button ? 12 : 0));
+			const auto filter_text = (filtering) ? filter(filter_size) : uresize(Config::getS("proc_filter"), filter_size);
 			out += Mv::to(y, x+9) + title_left + (not filter_text.empty() ? Fx::b : "") + Theme::c("hi_fg") + 'f'
 				+ Theme::c("title") + (not filter_text.empty() ? ' ' + filter_text : "ilter")
 				+ (not filtering and not filter_text.empty() ? Theme::c("hi_fg") + " del" : "")
@@ -1917,6 +1952,13 @@ namespace Proc {
 			const int sort_len = sorting.size();
 			const int sort_pos = x + width - sort_len - 8;
 
+			if (gpu_only_button) {
+				fmt::format_to(std::back_inserter(out), "{}{}{}{}{}{}{}{}{}{}{}",
+					Mv::to(y, sort_pos - 44), title_left, Proc::gpu_only_enabled() ? Fx::b : "",
+					Theme::c("title"), "gpu-acti", Theme::c("hi_fg"), 'v', Theme::c("title"), "e",
+					Fx::ub, title_right);
+				Input::mouse_mappings["v"] = {y, sort_pos - 43, 1, 10};
+			}
 			if (width > 60 + sort_len) {
 			    fmt::format_to(std::back_inserter(out), "{}{}{}{}{}{}{}{}{}{}{}",
 					Mv::to(y, sort_pos - 32), title_left, pause_proc_list ? Fx::b : "",
@@ -1992,6 +2034,7 @@ namespace Proc {
 			out += (thread_size > 0 ? Mv::l(4) + "Threads: " : "")
 					+ ljust("User:", user_size) + ' '
 					+ rjust((mem_bytes ? "MemB" : "Mem%"), 5) + ' '
+					+ (show_gpu ? rjust("GMem", 5) + ' ' + rjust("Gpu%", 5) + ' ' : "")
 					+ rjust("Cpu%", (show_graphs ? 10 : 5)) + Fx::ub;
 		}
 		//* End of redraw block
@@ -2022,6 +2065,35 @@ namespace Proc {
 			if (item_fit >= 7) out += cjust(to_string(detailed.entry.threads), item_width);
 			if (item_fit >= 8) out += cjust(to_string(detailed.entry.p_nice), item_width);
 
+
+			//? GPU usage of the process, the line stays empty for a process that doesn't use a GPU
+			if (gpu_stats) {
+				const auto& gpu = detailed.entry.gpu;
+				vector<std::pair<string, string>> gpu_items;
+				if (gpu.present()) {
+					gpu_items.emplace_back("GPU: ", format_gpu_percent(gpu.usage_p) + '%');
+					gpu_items.emplace_back("GMem: ", floating_humanizer(gpu.mem));
+					gpu_items.emplace_back("Dev: ", gpu.dev);
+					if (gpu.type != 0)
+						gpu_items.emplace_back("Type: ", gpu.type == (gpu_context_graphic | gpu_context_compute) ? "Graphic+Compute"
+							: gpu.type == gpu_context_compute ? "Compute" : "Graphic");
+					gpu_items.emplace_back("Enc: ", format_gpu_percent(gpu.enc_p) + '%');
+					gpu_items.emplace_back("Dec: ", format_gpu_percent(gpu.dec_p) + '%');
+				}
+
+				//? Keep as many items as fit, the most telling ones come first
+				const int line_width = d_width - 2;
+				int used_width = 0;
+				string gpu_line;
+				for (const auto& [label, value] : gpu_items) {
+					const int item_size = ulen(label) + ulen(value) + (used_width > 0 ? 2 : 0);
+					if (used_width + item_size > line_width) break;
+					gpu_line += (used_width > 0 ? "  " : "") + Theme::c("title") + Fx::b + label + Theme::c("main_fg") + Fx::ub + value;
+					used_width += item_size;
+				}
+				const int pad_left = (line_width - used_width) / 2;
+				out += Mv::to(d_y + 3, d_x + 1) + string(pad_left, ' ') + gpu_line + string(line_width - used_width - pad_left, ' ');
+			}
 
 			const double mem_p = detailed.mem_bytes.back() * 100.0 / totalMem;
 			string mem_str = fmt::format("{:.2f}", mem_p);
@@ -2073,9 +2145,9 @@ namespace Proc {
 			out += Fx::reset;
 
 			//? Set correct gradient colors if enabled
-			string c_color, m_color, t_color, g_color, end;
+			string c_color, m_color, t_color, g_color, u_color, end;
 			if (is_selected or is_followed) {
-				c_color = m_color = t_color = g_color = Fx::b;
+				c_color = m_color = t_color = g_color = u_color = Fx::b;
 				end = Fx::ub;
 				const string highlight = is_followed ? Theme::c("followed_bg") + Theme::c("followed_fg") : Theme::c("selected_bg") + Theme::c("selected_fg");
 				fmt::format_to(std::back_inserter(out), "{}{}", highlight, Fx::b);
@@ -2084,8 +2156,8 @@ namespace Proc {
 				int calc = (selected > lc) ? selected - lc : lc - selected;
 				if (proc_colors) {
 					end = Theme::c("main_fg") + Fx::ub;
-					array<string, 3> colors;
-					for (int i = 0; int v : {(int)round(p.cpu_p), (int)round(p.mem * 100 / totalMem), (int)p.threads / 3}) {
+					array<string, 4> colors;
+					for (int i = 0; int v : {(int)round(p.cpu_p), (int)round(p.mem * 100 / totalMem), (int)p.threads / 3, (int)round(p.gpu.usage_p)}) {
 						if (proc_gradient) {
 							int val = (min(v, 100) + 100) - calc * 100 / select_max;
 							if (val < 100) colors[i++] = Theme::g("proc_color").at(max(0, val));
@@ -2094,10 +2166,10 @@ namespace Proc {
 						else
 							colors[i++] = Theme::g("process").at(clamp(v, 0, 100));
 					}
-					c_color = colors.at(0); m_color = colors.at(1); t_color = colors.at(2);
+					c_color = colors.at(0); m_color = colors.at(1); t_color = colors.at(2); u_color = colors.at(3);
 				}
 				else {
-					c_color = m_color = t_color = Fx::b;
+					c_color = m_color = t_color = u_color = Fx::b;
 					end = Fx::ub;
 				}
 				if (proc_gradient) {
@@ -2162,9 +2234,17 @@ namespace Proc {
 				}
 			}();
 
+			//? GPU memory and usage, left empty for processes that don't use a GPU
+			string gpu_str;
+			if (show_gpu) {
+				gpu_str = g_color + rjust(p.gpu.present() ? floating_humanizer(p.gpu.mem, true) : "", 5) + ' '
+					+ u_color + rjust(p.gpu.present() ? format_gpu_percent(p.gpu.usage_p) : "", 5) + end + ' ';
+			}
+
 			out += (thread_size > 0 ? t_color + rjust(proc_threads_string, thread_size) + ' ' + end : "" )
 				+ g_color + ljust((cmp_greater(p.user.size(), user_size) ? p.user.substr(0, user_size - 1) + '+' : p.user), user_size) + ' '
 				+ m_color + rjust(mem_str, 5) + end + ' '
+				+ gpu_str
 				+ (is_selected or is_followed ? "" : Theme::c("inactive_fg")) + (show_graphs ? graph_bg * 5: "")
 				+ (p_graphs.contains(p.pid) ? Mv::l(5) + c_color + p_graphs.at(p.pid)({(p.cpu_p >= 0.1 and p.cpu_p < 5 ? 5ll : (long long)round(p.cpu_p))}, data_same) : "") + end + ' '
 				+ c_color + rjust(cpu_str, 4) + "  " + end;
@@ -2390,6 +2470,7 @@ namespace Draw {
 			gpu_meter_vec.resize(shown);
 			pwr_meter_vec.resize(shown);
 			enc_meter_vec.resize(shown);
+			fan_meter_vec.resize(shown);
 			redraw.resize(shown);
 			total_height = 0;
 			for (auto i = 0; i < shown; ++i) {

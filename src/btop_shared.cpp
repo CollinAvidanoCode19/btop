@@ -22,6 +22,7 @@ tab-size = 4
 #include <ranges>
 #include <regex>
 #include <string>
+#include <tuple>
 #include <unordered_set>
 
 #include "btop_config.hpp"
@@ -101,6 +102,41 @@ bool set_priority(pid_t pid, int priority) {
   return false;
 }
 
+	bool gpu_stats_available = false;
+
+	bool gpu_stats_enabled() {
+		return gpu_stats_available and Config::getB("proc_gpu_stats");
+	}
+
+	bool gpu_only_enabled() {
+		return gpu_stats_enabled() and Config::getB("proc_gpu_only");
+	}
+
+	void gpu_proc_info::add(const gpu_proc_info& other) {
+		usage_p += other.usage_p;
+		enc_p += other.enc_p;
+		dec_p += other.dec_p;
+		mem += other.mem;
+		type |= other.type;
+
+		//? Merge the device labels without repeating a device both processes use
+		for (const auto& label : ssplit(other.dev, '+')) {
+			if (rng::contains(ssplit(dev, '+'), label)) continue;
+			if (not dev.empty()) dev += '+';
+			dev += label;
+		}
+	}
+
+	//? Sort keys for the GPU columns. Ties are broken by the other GPU value and then by GPU
+	//? presence, so idle GPU processes stay grouped ahead of processes that don't use a GPU at all.
+	static auto gpu_usage_key(const proc_info& proc) {
+		return std::tuple{proc.gpu.usage_p, proc.gpu.mem, proc.gpu.present()};
+	}
+
+	static auto gpu_mem_key(const proc_info& proc) {
+		return std::tuple{proc.gpu.mem, proc.gpu.usage_p, proc.gpu.present()};
+	}
+
 	void proc_sorter(vector<proc_info>& proc_vec, const string& sorting, bool reverse, bool tree) {
 		if (reverse) {
 			switch (v_index(sort_vector, sorting)) {
@@ -112,6 +148,8 @@ bool set_priority(pid_t pid, int priority) {
 			case 5: rng::stable_sort(proc_vec, rng::less{}, &proc_info::mem); 		break;
 			case 6: rng::stable_sort(proc_vec, rng::less{}, &proc_info::cpu_p);		break;
 			case 7: rng::stable_sort(proc_vec, rng::less{}, &proc_info::cpu_c);		break;
+			case 8: rng::stable_sort(proc_vec, rng::less{}, gpu_usage_key);			break;
+			case 9: rng::stable_sort(proc_vec, rng::less{}, gpu_mem_key);			break;
 			}
 		}
 		else {
@@ -124,6 +162,8 @@ bool set_priority(pid_t pid, int priority) {
 			case 5: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::mem); 		break;
 			case 6: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::cpu_p);   	break;
 			case 7: rng::stable_sort(proc_vec, rng::greater{}, &proc_info::cpu_c);   	break;
+			case 8: rng::stable_sort(proc_vec, rng::greater{}, gpu_usage_key);		break;
+			case 9: rng::stable_sort(proc_vec, rng::greater{}, gpu_mem_key);		break;
 			}
 		}
 
@@ -153,6 +193,8 @@ bool set_priority(pid_t pid, int priority) {
 				case 5: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().mem < b.entry.get().mem; });	break;
 				case 6: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().cpu_p < b.entry.get().cpu_p; });	break;
 				case 7: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().cpu_c < b.entry.get().cpu_c; });	break;
+				case 8: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_usage_key(a.entry.get()) < gpu_usage_key(b.entry.get()); });	break;
+				case 9: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_mem_key(a.entry.get()) < gpu_mem_key(b.entry.get()); });	break;
 				}
 			}
 			else {
@@ -161,6 +203,8 @@ bool set_priority(pid_t pid, int priority) {
 				case 5: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().mem > b.entry.get().mem; });	break;
 				case 6: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().cpu_p > b.entry.get().cpu_p; });	break;
 				case 7: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return a.entry.get().cpu_c > b.entry.get().cpu_c; });	break;
+				case 8: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_usage_key(a.entry.get()) > gpu_usage_key(b.entry.get()); });	break;
+				case 9: rng::stable_sort(proc_vec, [](const auto& a, const auto& b) { return gpu_mem_key(a.entry.get()) > gpu_mem_key(b.entry.get()); });	break;
 				}
 			}
 		}
@@ -174,6 +218,11 @@ bool set_priority(pid_t pid, int priority) {
 	}
 
 	auto matches_filter(const proc_info& proc, const std::string& filter) -> bool {
+		//? The GPU-only toggle narrows the list before any text filter is applied
+		if (gpu_only_enabled() and not proc.gpu.present()) {
+			return false;
+		}
+
 		if (filter.starts_with("!")) {
 			if (filter.size() == 1) {
 				return true;
@@ -245,6 +294,7 @@ bool set_priority(pid_t pid, int priority) {
 					cur_proc.cpu_c += p.cpu_c;
 					cur_proc.mem += p.mem;
 					cur_proc.threads += p.threads;
+					cur_proc.gpu.add(p.gpu);
 				}
 				filter_found++;
 				p.filtered = true;
@@ -254,6 +304,7 @@ bool set_priority(pid_t pid, int priority) {
 				cur_proc.cpu_c += p.cpu_c;
 				cur_proc.mem += p.mem;
 				cur_proc.threads += p.threads;
+				cur_proc.gpu.add(p.gpu);
 			}
 		}
 	}
@@ -343,6 +394,8 @@ const vector<string> Proc::sort_vector = {
 	"memory",
 	"cpu direct",
 	"cpu lazy",
+	"gpu",
+	"gpu memory",
 };
 
 const std::unordered_map<char, string> Proc::proc_states = {

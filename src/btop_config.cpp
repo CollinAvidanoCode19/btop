@@ -122,7 +122,7 @@ namespace Config {
 
 		{"update_ms", 			"#* Update time in milliseconds, recommended 2000 ms or above for better sample times for graphs."},
 
-		{"proc_sorting",		"#* Processes sorting, \"pid\" \"program\" \"arguments\" \"threads\" \"user\" \"memory\" \"cpu lazy\" \"cpu direct\",\n"
+		{"proc_sorting",		"#* Processes sorting, \"pid\" \"program\" \"arguments\" \"threads\" \"user\" \"memory\" \"cpu lazy\" \"cpu direct\" \"gpu\" \"gpu memory\",\n"
 								"#* \"cpu lazy\" sorts top process over time (easier to follow), \"cpu direct\" updates top process directly."},
 
 		{"proc_reversed",		"#* Reverse sorting order, True or False."},
@@ -138,6 +138,10 @@ namespace Config {
 		{"proc_mem_bytes", 		"#* Show process memory as bytes instead of percent."},
 
 		{"proc_cpu_graphs",     "#* Show cpu graph for each process."},
+
+		{"proc_gpu_stats",      "#* (Linux) Collect GPU usage and GPU memory per process and show them in the process list."},
+
+		{"proc_gpu_only",       "#* (Linux) Only list processes that use a GPU, requires proc_gpu_stats."},
 
 		{"proc_info_smaps",		"#* Use /proc/[pid]/smaps for memory information in the process info box (very slow but more accurate)"},
 
@@ -325,6 +329,8 @@ namespace Config {
 		{"proc_per_core", false},
 		{"proc_mem_bytes", true},
 		{"proc_cpu_graphs", true},
+		{"proc_gpu_stats", true},
+		{"proc_gpu_only", false},
 		{"proc_info_smaps", false},
 		{"proc_left", false},
 		{"proc_filter_kernel", false},
