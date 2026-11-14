@@ -383,6 +383,39 @@ auto detect_container() -> std::optional<std::string> {
 
 #if defined(GPU_SUPPORT)
 const array<string, 2> Gpu::mem_names { "used", "free" };
+
+const array<Gpu::graph_series, 3> Gpu::graph_series_list {{
+	{"gpu-totals", "cpu", "gpu"},
+	{"gpu-vram-totals", "used", "vram"},
+	{"gpu-pwr-totals", "cached", "pwr"},
+}};
+
+namespace Gpu {
+	//* Whether <gpu> reports the values behind the series <key>
+	static bool reports_series(const gpu_info& gpu, const string& key) {
+		const auto& supported = gpu.supported_functions;
+		if (key == "gpu-totals") return supported.gpu_utilization;
+		if (key == "gpu-vram-totals") return supported.mem_total and supported.mem_used;
+		if (key == "gpu-pwr-totals") return supported.pwr_usage;
+		return false;
+	}
+
+	auto pick_graph_series(const gpu_info& gpu, const string& choice, const string& avoid) -> std::optional<graph_series> {
+		const auto reported = [&gpu](const graph_series& series) { return reports_series(gpu, series.key); };
+
+		if (const auto chosen = rng::find(graph_series_list, choice, &graph_series::key);
+			chosen != graph_series_list.end() and reported(*chosen)) {
+			return *chosen;
+		}
+
+		std::optional<graph_series> fallback;
+		for (const auto& series : graph_series_list | std::views::filter(reported)) {
+			if (series.key != avoid) return series;
+			fallback = series;
+		}
+		return fallback;
+	}
+}
 #endif
 
 const vector<string> Proc::sort_vector = {

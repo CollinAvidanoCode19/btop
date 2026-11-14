@@ -179,6 +179,23 @@ namespace Gpu {
 		gpu_info_supported supported_functions;
 	};
 
+	//* A series of percent values that can be shown in one half of the graph in the gpu box
+	struct graph_series {
+		string key;       // Key of the series in gpu_info::gpu_percent, also its name in the config
+		string gradient;  // Name of the theme gradient the graph is drawn with
+		string label;     // Short name shown in the corner of the graph
+	};
+
+	//? The series that can be shown, in the order they are tried for a half that is set to "Auto"
+	extern const array<graph_series, 3> graph_series_list;
+
+	//* Returns the series to show in one half of the graph of <gpu>, nullopt if the device reports none.
+	//* <choice> is the value of gpu_graph_upper or gpu_graph_lower: the key of a series or "Auto".
+	//* "Auto", and a series the device doesn't report, resolve to the first reported series whose
+	//* key isn't <avoid>. Passing the key of the upper half as <avoid> makes an automatic lower half
+	//* show something else, it only repeats that series if the device has nothing else to offer.
+	[[nodiscard]] auto pick_graph_series(const gpu_info& gpu, const string& choice, const string& avoid = "") -> std::optional<graph_series>;
+
 	namespace Nvml {
 		extern bool shutdown();
 	}

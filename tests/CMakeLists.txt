@@ -13,7 +13,7 @@ add_library(libbtop_test)
 target_include_directories(libbtop_test PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(libbtop_test libbtop GTest::gtest_main)
 
-add_executable(btop_test cpu_names.cpp tools.cpp)
+add_executable(btop_test cpu_names.cpp gpu_graph_series.cpp tools.cpp)
 if(LINUX)
   target_sources(btop_test PRIVATE drm_fdinfo.cpp)
 endif()

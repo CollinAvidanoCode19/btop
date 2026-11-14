@@ -2448,11 +2448,11 @@ namespace Gpu {
 				while (cmp_greater(gpu.gpu_percent.at("gpu-totals").size(), width * 2)) gpu.gpu_percent.at("gpu-totals").pop_front();
 				while (cmp_greater(gpu.mem_utilization_percent.size(), width)) gpu.mem_utilization_percent.pop_front();
 				//? Power usage
-				while (cmp_greater(gpu.gpu_percent.at("gpu-pwr-totals").size(), width)) gpu.gpu_percent.at("gpu-pwr-totals").pop_front();
+				while (cmp_greater(gpu.gpu_percent.at("gpu-pwr-totals").size(), width * 2)) gpu.gpu_percent.at("gpu-pwr-totals").pop_front();
 				//? Temperature
 				while (cmp_greater(gpu.temp.size(), 18)) gpu.temp.pop_front();
 				//? Memory usage
-				while (cmp_greater(gpu.gpu_percent.at("gpu-vram-totals").size(), width/2)) gpu.gpu_percent.at("gpu-vram-totals").pop_front();
+				while (cmp_greater(gpu.gpu_percent.at("gpu-vram-totals").size(), width * 2)) gpu.gpu_percent.at("gpu-vram-totals").pop_front();
 			}
 		}
 

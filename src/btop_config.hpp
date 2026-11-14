@@ -51,6 +51,7 @@ namespace Config {
 #endif
 #ifdef GPU_SUPPORT
 	extern const  vector<string> show_gpu_values;
+	extern const  vector<string> gpu_graph_values;
 #endif
     extern const vector<string> base_10_bitrate_values;
 	extern vector<string> current_boxes;

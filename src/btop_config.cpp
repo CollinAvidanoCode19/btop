@@ -61,6 +61,7 @@ const vector<string> Config::freq_modes = { "first", "range", "lowest", "highest
 #endif
 #ifdef GPU_SUPPORT
 const vector<string> Config::show_gpu_values = { "Auto", "On", "Off" };
+const vector<string> Config::gpu_graph_values = { "Auto", "gpu-totals", "gpu-vram-totals", "gpu-pwr-totals" };
 #endif
 const vector<string> Config::base_10_bitrate_values = { "Auto", "True", "False" };
 const vector<string> Config::disable_preset_options = { "Off", "Default", "Custom", "All" };
@@ -263,7 +264,11 @@ namespace Config {
 								"#* Measure PCIe throughput on NVIDIA cards, may impact performance on certain cards."},
 		{"rsmi_measure_pcie_speeds",
 								"#* Measure PCIe throughput on AMD cards, may impact performance on certain cards."},
-		{"gpu_mirror_graph",	"#* Horizontally mirror the GPU graph."},
+		{"gpu_mirror_graph",	"#* Split the graph in the GPU box into an upper and a lower half, the lower half shows \"gpu_graph_lower\"."},
+		{"gpu_graph_upper",		"#* Sets the GPU stat shown in the upper half of the graph in the GPU box.\n"
+								"#* \"Auto\" (utilization), \"gpu-totals\" (utilization), \"gpu-vram-totals\" (memory usage) or \"gpu-pwr-totals\" (power draw)."},
+		{"gpu_graph_lower",		"#* Sets the GPU stat shown in the lower half of the graph in the GPU box, same values as \"gpu_graph_upper\".\n"
+								"#* \"Auto\" picks memory usage, or the next stat the device reports that the upper half doesn't already show."},
 		{"shown_gpus",			"#* Set which GPU vendors to show. Available values are \"nvidia amd intel apple\""},
 		{"custom_gpu_name0",	"#* Custom gpu0 model name, empty string to disable."},
 		{"custom_gpu_name1",	"#* Custom gpu1 model name, empty string to disable."},
@@ -313,6 +318,8 @@ namespace Config {
 		{"custom_gpu_name4", ""},
 		{"custom_gpu_name5", ""},
 		{"show_gpu_info", "Auto"},
+		{"gpu_graph_upper", "Auto"},
+		{"gpu_graph_lower", "Auto"},
 		{"shown_gpus", "nvidia amd intel apple"}
 	#endif
 	};
@@ -627,6 +634,9 @@ namespace Config {
 	#ifdef GPU_SUPPORT
 		else if (name == "show_gpu_info" and not v_contains(show_gpu_values, value))
 			validError = "Invalid value for show_gpu_info: " + value;
+
+		else if (name.starts_with("gpu_graph_") and not v_contains(gpu_graph_values, value))
+			validError = fmt::format("Invalid value for {}: {}", name, value);
 	#endif
 
 		else if (name == "presets" and not presetsValid(value))

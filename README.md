@@ -483,6 +483,18 @@ See [GPU compatibility](#gpu-compatibility) section for more about compiling wit
    git clone https://github.com/rocm/rocm_smi_lib.git --depth 1 -b rocm-5.6.x lib/rocm_smi_lib
    ```
 
+   ### GPU graph
+
+   The GPU box (keys `5`, `6`, `7`, ... for the first, second, third, ... device) sits below the CPU box and plots
+   two stats of the device over time: utilization in the upper half and memory usage mirrored below it, with a
+   line between them that names both and shows their current values.
+
+   What each half shows can be changed with the options `gpu_graph_upper` and `gpu_graph_lower`, the choices are
+   `gpu-totals` (utilization), `gpu-vram-totals` (memory usage) and `gpu-pwr-totals` (power draw). The default
+   `Auto` picks utilization for the upper half and memory usage for the lower one, or the next stat the device
+   reports if it has no memory figures. Selecting the same stat for both halves gives a plain mirrored graph and
+   turning `gpu_mirror_graph` off gives a single graph that uses the whole height.
+
    ### GPU usage per process
 
    With GPU support enabled the process box on Linux shows how much each process uses the GPUs:

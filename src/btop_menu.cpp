@@ -596,9 +596,36 @@ namespace Menu {
 				"",
 				"\"default\" for the general default symbol.",},
 			{"gpu_mirror_graph",
-				"Horizontally mirror the GPU graph.",
+				"Split the graph in the gpu box in two.",
+				"",
+				"The lower half is mirrored below the",
+				"upper one and shows the stat selected",
+				"with \"gpu_graph_lower\".",
 				"",
 				"True or False."},
+			{"gpu_graph_upper",
+				"Stat shown in the upper half of the",
+				"graph in the gpu box.",
+				"",
+				"\"Auto\" = Utilization.",
+				"\"gpu-totals\" = Utilization.",
+				"\"gpu-vram-totals\" = Memory usage.",
+				"\"gpu-pwr-totals\" = Power draw.",
+				"",
+				"A stat the device doesn't report is",
+				"replaced by one that it does."},
+			{"gpu_graph_lower",
+				"Stat shown in the lower half of the",
+				"graph in the gpu box.",
+				"",
+				"\"Auto\" = Memory usage, or the next stat",
+				"the device reports that isn't already",
+				"shown in the upper half.",
+				"\"gpu-totals\" = Utilization.",
+				"\"gpu-vram-totals\" = Memory usage.",
+				"\"gpu-pwr-totals\" = Power draw.",
+				"",
+				"Needs \"gpu_mirror_graph\"."},
 			{"shown_gpus",
 				"Manually set which gpu vendors to show.",
 				"",
@@ -1362,6 +1389,8 @@ static int optionsMenu(const string& key) {
 		#ifdef GPU_SUPPORT
 			{"show_gpu_info", std::cref(Config::show_gpu_values)},
 			{"graph_symbol_gpu", std::cref(Config::valid_graph_symbols_def)},
+			{"gpu_graph_upper", std::cref(Config::gpu_graph_values)},
+			{"gpu_graph_lower", std::cref(Config::gpu_graph_values)},
 		#endif
 		};
 		auto tty_mode = Config::getB("tty_mode");
@@ -1601,7 +1630,7 @@ static int optionsMenu(const string& key) {
 					else if (option == "base_10_bitrate") {
 						recollect = true;
 					}
-					else if (is_in(option, "proc_sorting", "cpu_sensor", "show_gpu_info") or option.starts_with("graph_symbol") or option.starts_with("cpu_graph_"))
+					else if (is_in(option, "proc_sorting", "cpu_sensor", "show_gpu_info") or option.starts_with("graph_symbol") or option.starts_with("cpu_graph_") or option.starts_with("gpu_graph_"))
 						screen_redraw = true;
 					else if (option == "disable_presets" and optList.at(i) != "Off") {
 						atomic_wait(Runner::active);

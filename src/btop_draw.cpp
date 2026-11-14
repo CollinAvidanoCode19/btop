@@ -1038,7 +1038,6 @@ namespace Gpu {
 	int shown = 0;
 	int count = 0;
 	vector<int> shown_panels = {};
-	int graph_up_height;
 	vector<Draw::Graph> graph_upper_vec = {}, graph_lower_vec = {};
 	vector<Draw::Graph> temp_graph_vec = {};
 	vector<Draw::Graph> mem_used_graph_vec = {}, mem_util_graph_vec = {};
@@ -1072,7 +1071,17 @@ namespace Gpu {
 		auto& temp_scale = Config::getS("temp_scale");
 		auto& graph_symbol = (tty_mode ? "tty" : Config::getS("graph_symbol_gpu"));
 		auto& graph_bg = Symbols::graph_symbols.at((graph_symbol == "default" ? Config::getS("graph_symbol") + "_up" : graph_symbol + "_up")).at(6);
-        auto single_graph = !Config::getB("gpu_mirror_graph");
+		//? What the two halves of the graph show, the lower half is optional and needs some room
+		const int graph_width = x + width - b_width - 3;
+		const int graph_rows = b_height_vec[index];
+		const auto upper_series = pick_graph_series(gpu, Config::getS("gpu_graph_upper"));
+		const auto lower_series = (upper_series.has_value() and graph_rows >= 3 and Config::getB("gpu_mirror_graph"))
+			? pick_graph_series(gpu, Config::getS("gpu_graph_lower"), upper_series->key) : std::nullopt;
+		//? Two different stats are separated by a line that carries the legend, the same stat on
+		//? both sides is the plain mirror image it always was
+		const bool mid_line = lower_series.has_value() and lower_series->key != upper_series->key;
+		const int graph_up_rows = lower_series.has_value() ? (graph_rows - mid_line + 1) / 2 : graph_rows;
+		const int graph_low_rows = graph_rows - mid_line - graph_up_rows;
 		string out;
 		int height = gpu_b_height_offsets[index] + 4;
 		out.reserve(width * height);
@@ -1081,22 +1090,15 @@ namespace Gpu {
 		if (redraw[index]) {
 			out += box[index];
 
-			graph_up_height = single_graph ? b_height_vec[index] : (b_height_vec[index] + 1) / 2;
-			int graph_low_height = single_graph ? 0 : b_height_vec[index] - graph_up_height;
-
-			if (gpu.supported_functions.gpu_utilization) {
-				graph_upper = Draw::Graph{x + width - b_width - 3, graph_up_height, "cpu", safeVal(gpu.gpu_percent, "gpu-totals"s), graph_symbol, false, true}; // TODO cpu -> gpu
-            	if (not single_graph) {
-                	graph_lower = Draw::Graph{
-                    	x + width - b_width - 3,
-                    	graph_low_height, "cpu",
-                    	safeVal(gpu.gpu_percent, "gpu-totals"s),
-                    	graph_symbol,
-                    	Config::getB("cpu_invert_lower"), true
-                	};
-            	}
+			if (upper_series.has_value())
+				graph_upper = Draw::Graph{graph_width, graph_up_rows, upper_series->gradient, safeVal(gpu.gpu_percent, upper_series->key), graph_symbol, false, true};
+			if (lower_series.has_value())
+				graph_lower = Draw::Graph{graph_width, graph_low_rows, lower_series->gradient, safeVal(gpu.gpu_percent, lower_series->key), graph_symbol, Config::getB("cpu_invert_lower"), true};
+			//? The line ends next to the stats box instead of joining its border, which that box redraws on its own
+			if (mid_line)
+				out += Mv::to(y + 1 + graph_up_rows, x) + Fx::ub + Theme::c("cpu_box") + Symbols::div_left + Theme::c("div_line") + Symbols::h_line * graph_width;
+			if (gpu.supported_functions.gpu_utilization)
 				gpu_meter = Draw::Meter{b_width - (show_temps ? 25 : 12), "cpu"};
-			}
 			if (gpu.supported_functions.temp_info)
 				temp_graph = Draw::Graph{6, 1, "temp", gpu.temp, graph_symbol, false, false, gpu.temp_max, -23};
 			if (gpu.supported_functions.pwr_usage)
@@ -1112,14 +1114,44 @@ namespace Gpu {
 		}
 
 
+		//* Graph of the selected stats over time
+		//? Values of a series, nullptr until the collector has delivered the first one
+		const auto values_of = [&gpu](const std::optional<graph_series>& series) -> const deque<long long>* {
+			if (not series.has_value()) return nullptr;
+			const auto found = gpu.gpu_percent.find(series->key);
+			return (found == gpu.gpu_percent.end() or found->second.empty()) ? nullptr : &found->second;
+		};
+		const auto* upper_values = values_of(upper_series);
+		const auto* lower_values = values_of(lower_series);
+
+		if (upper_values != nullptr)
+			out += Fx::ub + Mv::to(y + 1, x + 1) + graph_upper(*upper_values, (data_same or redraw[index]));
+		if (lower_values != nullptr)
+			out += Fx::ub + Mv::to(y + 1 + graph_up_rows + mid_line, x + 1) + graph_lower(*lower_values, (data_same or redraw[index]));
+
+		//? Name and current value of what is shown: centered on the dividing line for two stats,
+		//? otherwise in the corner of the graph that holds its oldest values
+		if (mid_line and upper_values != nullptr and lower_values != nullptr) {
+			//? "<label> nnn%" in the color the value has in its graph, 5 characters longer than the label
+			const auto legend_item = [](const graph_series& series, const long long value) {
+				return Theme::c("main_fg") + series.label + ' ' + Theme::g(series.gradient).at(clamp(value, 0ll, 100ll)) + rjust(to_string(value), 3) + '%';
+			};
+			const int legend_size = upper_series->label.size() + lower_series->label.size() + 14;
+			if (graph_width >= legend_size + 2)
+				out += Mv::to(y + 1 + graph_up_rows, x + 1 + (graph_width - legend_size) / 2) + Fx::ub
+					+ legend_item(*upper_series, upper_values->back()) + Mv::r(1) + Theme::c("main_fg") + "▲▼" + Mv::r(1)
+					+ legend_item(*lower_series, lower_values->back());
+		}
+		else if (upper_values != nullptr) {
+			const string label = upper_series->label + ' ' + to_string(upper_values->back()) + '%';
+			if (graph_width >= (int)label.size() + 2)
+				out += Mv::to(y + 1, x + 1) + Fx::ub + Theme::c("graph_text") + label;
+		}
+
 		//* General GPU info
 		int rows_used = 1;
-		//? Gpu graph, meter & clock speed
+		//? Gpu meter & clock speed
 		if (gpu.supported_functions.gpu_utilization) {
-			out += Fx::ub + Mv::to(y + rows_used, x + 1) + graph_upper(safeVal(gpu.gpu_percent, "gpu-totals"s), (data_same or redraw[index]));
-			if (not single_graph)
-				out += Mv::to(y + rows_used + graph_up_height, x + 1) + graph_lower(safeVal(gpu.gpu_percent, "gpu-totals"s), (data_same or redraw[index]));
-
 			out += Mv::to(b_y + rows_used, b_x + 1) + Theme::c("main_fg") + Fx::b + "GPU " + gpu_meter(safeVal(gpu.gpu_percent, "gpu-totals"s).back())
 				+ Theme::g("cpu").at(clamp(safeVal(gpu.gpu_percent, "gpu-totals"s).back(), 0ll, 100ll)) + rjust(to_string(safeVal(gpu.gpu_percent, "gpu-totals"s).back()), 5) + Theme::c("main_fg") + '%';
 
