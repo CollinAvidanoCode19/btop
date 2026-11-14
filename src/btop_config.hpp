@@ -66,8 +66,21 @@ namespace Config {
 
 	[[nodiscard]] std::optional<std::filesystem::path> get_config_dir() noexcept;
 
+	//? False as long as the user hasn't chosen which boxes to show: shown_boxes wasn't in the
+	//? config file and hasn't been changed since. The setting is then also kept out of the
+	//? config file, so that the default, which depends on the hardware and on the size of the
+	//? terminal, is worked out again on the next start.
+	extern bool boxes_configured;
+
 	//* Check if string only contains space separated valid names for boxes and set current_boxes
 	bool set_boxes(const string& boxes);
+
+	//* Set the boxes that are shown while the user hasn't chosen any: the four standard ones
+	//* and, if a GPU was found and the terminal is large enough for it, the box of the first GPU.
+	//* To be called once the size of the terminal is known and the collectors are initialized,
+	//* and again whenever the terminal is resized. The config must not be locked.
+	//* Does nothing once the user has chosen boxes, see boxes_configured.
+	void update_default_boxes();
 
 	bool validBoxSizes(const string& boxes);
 

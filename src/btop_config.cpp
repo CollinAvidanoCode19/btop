@@ -119,7 +119,8 @@ namespace Config {
 
 		{"graph_symbol_proc", 	"# Graph symbol to use for graphs in cpu box, \"default\", \"braille\", \"block\" or \"tty\"."},
 
-		{"shown_boxes", 		"#* Manually set which boxes to show. Available values are \"cpu mem net proc\" and \"gpu0\" through \"gpu5\", separate values with whitespace."},
+		{"shown_boxes", 		"#* Manually set which boxes to show. Available values are \"cpu mem net proc\" and \"gpu0\" through \"gpu5\", separate values with whitespace.\n"
+								"#* As long as this is commented out btop shows \"cpu mem net proc\" and, if there is a GPU and the terminal is large enough, \"gpu0\"."},
 
 		{"update_ms", 			"#* Update time in milliseconds, recommended 2000 ms or above for better sample times for graphs."},
 
@@ -483,6 +484,7 @@ namespace Config {
 	vector<string> available_batteries = {"Auto"};
 
 	vector<string> current_boxes;
+	bool boxes_configured = false;
 	vector<string> preset_list = {"cpu:0:default,mem:0:default,net:0:default,proc:0:default"};
 	std::optional<int> current_preset;
 
@@ -557,6 +559,7 @@ namespace Config {
 
 		if (set_boxes(boxes)) {
 			set("shown_boxes", boxes);
+			boxes_configured = true;
 			return true;
 		}
 		return false;
@@ -627,8 +630,10 @@ namespace Config {
 				validError = "Terminal too small to display entered boxes!";
 			else if (not set_boxes(value))
 				validError = "Invalid box name(s) in shown_boxes!";
-			else
+			else {
+				boxes_configured = true;
 				return true;
+			}
 		}
 
 	#ifdef GPU_SUPPORT
@@ -752,6 +757,19 @@ namespace Config {
 		return true;
 	}
 
+	void update_default_boxes() {
+		if (boxes_configured) return;
+
+		string boxes = "cpu mem net proc";
+	#ifdef GPU_SUPPORT
+		//? The box of a GPU is tall, a terminal of the minimum size has no room for it
+		if (const string with_gpu = boxes + " gpu0"; Gpu::count > 0 and validBoxSizes(with_gpu)) boxes = with_gpu;
+	#endif
+
+		//? Written directly: set() would flag the config as changed and have it rewritten on exit
+		if (set_boxes(boxes)) strings.at("shown_boxes") = boxes;
+	}
+
 	bool toggle_box(const string& box) {
 		auto old_boxes = current_boxes;
 		auto box_pos = rng::find(current_boxes, box);
@@ -774,6 +792,7 @@ namespace Config {
 		}
 
 		Config::set("shown_boxes", new_boxes);
+		boxes_configured = true;
 		return true;
 	}
 
@@ -810,6 +829,7 @@ namespace Config {
 					cread.ignore(SSmax, '\n');
 					continue;
 				}
+				if (name == "shown_boxes") boxes_configured = true;
 				cread >> std::ws;
 
 				if (bools.contains(name)) {
@@ -899,6 +919,11 @@ namespace Config {
 			fmt::format_to(std::back_inserter(buffer), "\n");
 			if (!description.empty()) {
 				fmt::format_to(std::back_inserter(buffer), "{}\n", description);
+			}
+
+			// A setting the user hasn't made yet stays commented out, so that it keeps following the default.
+			if (name == "shown_boxes" and not boxes_configured) {
+				fmt::format_to(std::back_inserter(buffer), "#");
 			}
 
 			fmt::format_to(std::back_inserter(buffer), "{} = ", name);

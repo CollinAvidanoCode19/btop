@@ -303,6 +303,11 @@ namespace Menu {
 			#endif
 				"Separate values with whitespace.",
 				"",
+				"Until boxes are chosen here, with the",
+				"number keys or with a preset, btop shows",
+				"\"cpu mem net proc\" and the first GPU",
+				"if the terminal is large enough.",
+				"",
 				"Toggle between presets with key \"p\"."},
 			{"update_ms",
 				"Update time in milliseconds.",

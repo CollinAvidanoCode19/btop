@@ -151,6 +151,9 @@ void term_resize(bool force) {
 	Term::refresh();
 	Config::unlock();
 
+	//? Boxes the user didn't choose follow the size of the terminal
+	Config::update_default_boxes();
+
 	auto boxes = Config::getS("shown_boxes");
 	auto min_size = Term::get_min_size(boxes);
 	auto minWidth = min_size.at(0), minHeight = min_size.at(1);
@@ -1034,6 +1037,9 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 		Global::exit_error_msg = fmt::format("Exception in Shared::init() -> {}", e.what());
 		clean_quit(1);
 	}
+
+	//? Without a choice in the config file the boxes depend on the GPUs that were just found and on the terminal
+	Config::update_default_boxes();
 
 	if (not Config::set_boxes(Config::getS("shown_boxes"))) {
 		Config::set_boxes("cpu mem net proc");

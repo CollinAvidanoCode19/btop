@@ -489,6 +489,11 @@ See [GPU compatibility](#gpu-compatibility) section for more about compiling wit
    two stats of the device over time: utilization in the upper half and memory usage mirrored below it, with a
    line between them that names both and shows their current values.
 
+   The box of the first GPU is shown from the start, next to the four standard boxes, if a GPU is found and the
+   terminal has room for it (the box needs about 13 more rows than the 80x24 minimum provides). This default
+   follows the size of the terminal and lasts until boxes are chosen: once a box is toggled with a number key,
+   a preset is applied or `shown_boxes` is set, that choice is saved and used as it is.
+
    What each half shows can be changed with the options `gpu_graph_upper` and `gpu_graph_lower`, the choices are
    `gpu-totals` (utilization), `gpu-vram-totals` (memory usage) and `gpu-pwr-totals` (power draw). The default
    `Auto` picks utilization for the upper half and memory usage for the lower one, or the next stat the device
@@ -1428,7 +1433,8 @@ graph_symbol_net = "default"
 graph_symbol_proc = "default"
 
 #* Manually set which boxes to show. Available values are "cpu mem net proc" and "gpu0" through "gpu5", separate values with whitespace.
-shown_boxes = "cpu mem net proc"
+#* As long as this is commented out btop shows "cpu mem net proc" and, if there is a GPU and the terminal is large enough, "gpu0".
+#shown_boxes = "cpu mem net proc gpu0"
 
 #* Update time in milliseconds, recommended 2000 ms or above for better sample times for graphs.
 update_ms = 2000
